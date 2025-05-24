@@ -43,22 +43,32 @@ HttpRequest HttpParser::parseRequest(const std::string& raw_request) {
         }
     }
 
-    // Parse headers and body
-    std::string current_line;
-    std::stringstream header_ss;
-    bool in_body = false;
-    while (std::getline(iss, current_line)) {
-        if (current_line == "\r" || current_line == "") { // End of headers
-            in_body = true;
+    // Parse headers
+    bool headers_completed = false;
+    while (std::getline(iss, line)) {
+        // Remove \r if present
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        
+        // Empty line indicates end of headers
+        if (line.empty()) {
+            headers_completed = true;
             continue;
         }
-        if (in_body) {
-            request.body += current_line;
+        
+        if (!headers_completed) {
+            parseHeaderLine(request, line);
         } else {
-            header_ss << current_line;
+            // Body content
+            request.body += line + "\n";
         }
     }
-    parseHeaders(request, header_ss.str());
+    
+    // Remove trailing newline from body if present
+    if (!request.body.empty() && request.body.back() == '\n') {
+        request.body.pop_back();
+    }
 
     // Parse cookies
     if (request.headers.count("Cookie")) {
@@ -66,7 +76,7 @@ HttpRequest HttpParser::parseRequest(const std::string& raw_request) {
     }
 
     // Parse body based on Content-Type
-    if (request.headers.count("Content-Type")) {
+    if (!request.body.empty() && request.headers.count("Content-Type")) {
         std::string content_type = request.headers["Content-Type"];
         if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
             parseUrlEncodedBody(request);
@@ -82,16 +92,19 @@ HttpRequest HttpParser::parseRequest(const std::string& raw_request) {
     return request;
 }
 
-void HttpParser::parseHeaders(HttpRequest& request, const std::string& header_str) {
-    std::istringstream iss(header_str);
-    std::string line;
-    while (std::getline(iss, line) && line != "\r") {
-        size_t colon_pos = line.find(':');
-        if (colon_pos != std::string::npos) {
-            std::string key = trim(line.substr(0, colon_pos));
-            std::string value = trim(line.substr(colon_pos + 1));
-            request.headers[key] = value;
+void HttpParser::parseHeaderLine(HttpRequest& request, const std::string& line) {
+    size_t colon_pos = line.find(':');
+    if (colon_pos != std::string::npos) {
+        std::string key = trim(line.substr(0, colon_pos));
+        
+        // Skip colon and any whitespace
+        size_t value_start = colon_pos + 1;
+        while (value_start < line.size() && (line[value_start] == ' ' || line[value_start] == '\t')) {
+            value_start++;
         }
+        
+        std::string value = line.substr(value_start);
+        request.headers[key] = trim(value);
     }
 }
 

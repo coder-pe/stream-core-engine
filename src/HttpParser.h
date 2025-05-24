@@ -42,7 +42,7 @@ public:
     std::string buildResponse(const HttpResponse& response);
 
 private:
-    void parseHeaders(HttpRequest& request, const std::string& header_str);
+    void parseHeaderLine(HttpRequest& request, const std::string& header_str);
     void parseUrlEncodedBody(HttpRequest& request);
     void parseMultipartFormData(HttpRequest& request, const std::string& boundary);
     void parseCookies(HttpRequest& request, const std::string& cookie_header);

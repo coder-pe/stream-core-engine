@@ -15,20 +15,22 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('uploadLink').addEventListener('click', (e) => {
         e.preventDefault();
-        if (getToken()) {
+        if (getToken() && !isTokenExpired()) {
             showSection('uploadSection');
         } else {
             alert('Please login as an instructor to upload videos.');
+            clearExpiredToken();
             showSection('authSection');
         }
     });
     document.getElementById('profileLink').addEventListener('click', (e) => {
         e.preventDefault();
-        if (getToken()) {
+        if (getToken() && !isTokenExpired()) {
             showSection('profileSection');
             loadProfile();
         } else {
             alert('Please login to view your profile.');
+            clearExpiredToken();
             showSection('authSection');
         }
     });
@@ -38,9 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('logoutLink').addEventListener('click', (e) => {
         e.preventDefault();
-        localStorage.removeItem('jwtToken');
+        clearToken();
         updateAuthUI();
-        showSection('authSection'); // Go to login/register page
+        showSection('authSection');
         alert('You have been logged out.');
     });
     document.getElementById('backToVideos').addEventListener('click', (e) => {
@@ -50,8 +52,54 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Helper functions for JWT and UI
-    const getToken = () => localStorage.getItem('jwtToken');
+    const getToken = () => {
+        const token = localStorage.getItem('jwtToken');
+        if (token && isTokenExpired(token)) {
+            clearToken();
+            return null;
+        }
+        return token;
+    };
+    
     const setToken = (token) => localStorage.setItem('jwtToken', token);
+    
+    const clearToken = () => localStorage.removeItem('jwtToken');
+    
+    const clearExpiredToken = () => {
+        if (isTokenExpired()) {
+            clearToken();
+            updateAuthUI();
+        }
+    };
+    
+    const isTokenExpired = (token = null) => {
+        const jwtToken = token || getToken();
+        if (!jwtToken) return true;
+        
+        try {
+            const payloadBase64 = jwtToken.split('.')[1];
+            const decodedPayload = JSON.parse(atob(payloadBase64));
+            
+            if (!decodedPayload.exp) return false; // No expiry set
+            
+            const currentTime = Math.floor(Date.now() / 1000); // Current time in seconds
+            const isExpired = currentTime >= decodedPayload.exp;
+            
+            if (isExpired) {
+                console.log('Token expired:', {
+                    current: currentTime,
+                    expires: decodedPayload.exp,
+                    difference: currentTime - decodedPayload.exp
+                });
+            }
+            
+            return isExpired;
+        } catch (e) {
+            console.error("Error checking token expiry:", e);
+            return true; // Treat as expired if can't decode
+        }
+    };
+    
     const getUserRole = () => {
         const token = getToken();
         if (!token) return null;
@@ -71,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const logoutLink = document.getElementById('logoutLink');
         const uploadLink = document.getElementById('uploadLink');
 
-        if (token) {
+        if (token && !isTokenExpired(token)) {
             loginRegisterLink.style.display = 'none';
             logoutLink.style.display = 'inline';
             const role = getUserRole();
@@ -81,10 +129,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 uploadLink.style.display = 'none';
             }
         } else {
+            if (token && isTokenExpired(token)) {
+                clearToken(); // Clear expired token
+            }
             loginRegisterLink.style.display = 'inline';
             logoutLink.style.display = 'none';
             uploadLink.style.display = 'none';
         }
+    };
+
+    // Enhanced error handling for API calls
+    const handleApiError = (response, data) => {
+        if (response.status === 401 || response.status === 403) {
+            console.log('Authentication/Authorization error detected');
+            clearToken();
+            updateAuthUI();
+            showSection('authSection');
+            alert('Session expired. Please log in again.');
+            return true; // Handled
+        }
+        return false; // Not handled
     };
 
     // Form Submissions
@@ -105,9 +169,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 setToken(data.token);
                 messageDiv.className = 'message success';
                 messageDiv.textContent = data.message;
+                
+                // Log token info for debugging
+                console.log('Login successful, token info:', {
+                    token: data.token.substring(0, 20) + '...',
+                    expired: isTokenExpired(data.token)
+                });
+                
                 updateAuthUI();
                 showSection('profileSection');
-                loadProfile(); // Load profile after successful login
+                loadProfile();
             } else {
                 messageDiv.className = 'message error';
                 messageDiv.textContent = data.error;
@@ -136,7 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 messageDiv.className = 'message success';
                 messageDiv.textContent = data.message;
-                e.target.reset(); // Clear form
+                e.target.reset();
             } else {
                 messageDiv.className = 'message error';
                 messageDiv.textContent = data.error;
@@ -153,9 +224,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const messageDiv = document.getElementById('uploadMessage');
         const token = getToken();
 
-        if (!token) {
+        if (!token || isTokenExpired(token)) {
             messageDiv.className = 'message error';
             messageDiv.textContent = 'You must be logged in to upload videos.';
+            clearExpiredToken();
             return;
         }
 
@@ -164,16 +236,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`
-                    // FormData automatically sets Content-Type for multipart
                 },
                 body: formData
             });
             const data = await response.json();
+            
+            if (handleApiError(response, data)) return;
+            
             if (response.ok) {
                 messageDiv.className = 'message success';
                 messageDiv.textContent = data.message;
-                e.target.reset(); // Clear form
-                loadVideos(); // Refresh video list
+                e.target.reset();
+                loadVideos();
                 showSection('videoListSection');
             } else {
                 messageDiv.className = 'message error';
@@ -185,12 +259,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Load Profile
+    // Load Profile with better error handling
     const loadProfile = async () => {
         const token = getToken();
-        if (!token) {
+        if (!token || isTokenExpired(token)) {
             document.getElementById('profileUsername').textContent = 'Not logged in';
             document.getElementById('profileRole').textContent = '';
+            clearExpiredToken();
             return;
         }
 
@@ -199,6 +274,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await response.json();
+            
+            if (handleApiError(response, data)) return;
+            
             if (response.ok) {
                 document.getElementById('profileUsername').textContent = data.username;
                 document.getElementById('profileRole').textContent = data.role;
@@ -206,13 +284,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error("Failed to load profile:", data.error);
                 document.getElementById('profileUsername').textContent = 'Error loading profile';
                 document.getElementById('profileRole').textContent = '';
-                // If token is invalid/expired, log out
-                if (response.status === 401 || response.status === 403) {
-                    localStorage.removeItem('jwtToken');
-                    updateAuthUI();
-                    showSection('authSection');
-                    alert('Session expired. Please log in again.');
-                }
             }
         } catch (error) {
             console.error("Network error loading profile:", error);
@@ -221,8 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-
-    // Load Videos
+    // Load Videos with better error handling
     const loadVideos = async (query = '') => {
         const videoListDiv = document.getElementById('videoList');
         const messageDiv = document.getElementById('videoListMessage');
@@ -231,38 +301,27 @@ document.addEventListener('DOMContentLoaded', () => {
         messageDiv.className = 'message';
 
         const token = getToken();
-        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const headers = (token && !isTokenExpired(token)) ? { 'Authorization': `Bearer ${token}` } : {};
         const url = query ? `/api/videos?q=${encodeURIComponent(query)}` : '/api/videos';
 
         try {
             const response = await fetch(url, { headers });
             const data = await response.json();
-            if (response.ok) {
-                if (data.videos && data.videos.length > 0) {
-                    data.videos.forEach(video => {
-                        const videoItem = document.createElement('div');
-                        videoItem.className = 'video-item';
-                        videoItem.dataset.videoId = video.id; // Store video ID
-
-                        // Simple placeholder for thumbnail
-                        const thumbnailUrl = video.thumbnail_url || 'https://via.placeholder.com/280x180?text=Video+Thumbnail';
-                        
-                        videoItem.innerHTML = `
-                            <img src="${thumbnailUrl}" alt="${video.title}">
-                            <div class="video-item-info">
-                                <h3>${video.title}</h3>
-                                <p><strong>Category:</strong> ${video.category}</p>
-                                <p><strong>Views:</strong> ${video.views}</p>
-                            </div>
-                        `;
-                        videoItem.addEventListener('click', () => showVideoDetails(video.id));
-                        videoListDiv.appendChild(videoItem);
-                    });
-                    messageDiv.textContent = '';
-                } else {
-                    messageDiv.className = 'message';
-                    messageDiv.textContent = query ? 'No videos found for your search.' : 'No videos available yet.';
+            
+            if (response.status === 401 || response.status === 403) {
+                // Token might be expired, but videos might still be accessible without auth
+                console.log('Auth error loading videos, retrying without token...');
+                clearExpiredToken();
+                const retryResponse = await fetch(url);
+                const retryData = await retryResponse.json();
+                if (retryResponse.ok) {
+                    displayVideos(retryData, videoListDiv, messageDiv, query);
+                    return;
                 }
+            }
+            
+            if (response.ok) {
+                displayVideos(data, videoListDiv, messageDiv, query);
             } else {
                 messageDiv.className = 'message error';
                 messageDiv.textContent = data.error || 'Failed to load videos.';
@@ -270,6 +329,33 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             messageDiv.className = 'message error';
             messageDiv.textContent = 'Network error or server unavailable.';
+        }
+    };
+
+    const displayVideos = (data, videoListDiv, messageDiv, query) => {
+        if (data.videos && data.videos.length > 0) {
+            data.videos.forEach(video => {
+                const videoItem = document.createElement('div');
+                videoItem.className = 'video-item';
+                videoItem.dataset.videoId = video.id;
+
+                const thumbnailUrl = video.thumbnail_url || 'https://via.placeholder.com/280x180?text=Video+Thumbnail';
+                
+                videoItem.innerHTML = `
+                    <img src="${thumbnailUrl}" alt="${video.title}">
+                    <div class="video-item-info">
+                        <h3>${video.title}</h3>
+                        <p><strong>Category:</strong> ${video.category}</p>
+                        <p><strong>Views:</strong> ${video.views}</p>
+                    </div>
+                `;
+                videoItem.addEventListener('click', () => showVideoDetails(video.id));
+                videoListDiv.appendChild(videoItem);
+            });
+            messageDiv.textContent = '';
+        } else {
+            messageDiv.className = 'message';
+            messageDiv.textContent = query ? 'No videos found for your search.' : 'No videos available yet.';
         }
     };
 
@@ -284,15 +370,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-
-    // Show Video Details
+    // Show Video Details with better error handling
     const showVideoDetails = async (videoId) => {
         const token = getToken();
-        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const headers = (token && !isTokenExpired(token)) ? { 'Authorization': `Bearer ${token}` } : {};
 
         try {
             const response = await fetch(`/api/videos/details?id=${videoId}`, { headers });
             const data = await response.json();
+
+            if (handleApiError(response, data)) return;
 
             if (response.ok) {
                 const video = data.video;
@@ -301,21 +388,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('videoDetailDescription').textContent = video.description;
                 document.getElementById('videoDetailCategory').textContent = video.category;
                 document.getElementById('videoDetailTags').textContent = video.tags ? video.tags.join(', ') : 'None';
-                // You'd fetch uploader's username via another API call based on video.user_id
-                document.getElementById('videoDetailUploader').textContent = `User ID: ${video.user_id}`; // Placeholder
+                document.getElementById('videoDetailUploader').textContent = `User ID: ${video.user_id}`;
                 document.getElementById('videoDetailViews').textContent = video.views;
                 document.getElementById('videoDetailUploadedAt').textContent = new Date(video.uploaded_at * 1000).toLocaleString();
 
                 showSection('videoDetailSection');
             } else {
                 alert(data.error || 'Failed to load video details.');
-                // If token invalid/expired, log out
-                if (response.status === 401 || response.status === 403) {
-                    localStorage.removeItem('jwtToken');
-                    updateAuthUI();
-                    showSection('authSection');
-                    alert('Session expired. Please log in again.');
-                }
             }
         } catch (error) {
             alert('Network error or server unavailable when loading video details.');
@@ -323,9 +402,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Check token periodically
+    setInterval(() => {
+        if (getToken() && isTokenExpired()) {
+            console.log('Token expired, clearing and updating UI');
+            clearToken();
+            updateAuthUI();
+            if (!['authSection', 'videoListSection'].includes(getCurrentSection())) {
+                showSection('authSection');
+                alert('Your session has expired. Please log in again.');
+            }
+        }
+    }, 60000); // Check every minute
+
+    const getCurrentSection = () => {
+        for (const sectionId of sections) {
+            const section = document.getElementById(sectionId);
+            if (section && section.style.display !== 'none') {
+                return sectionId;
+            }
+        }
+        return 'videoListSection'; // Default
+    };
 
     // Initial setup
     updateAuthUI();
-    showSection('videoListSection'); // Start on video list
-    loadVideos(); // Load videos on initial page load
+    showSection('videoListSection');
+    loadVideos();
 });
